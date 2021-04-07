@@ -18,7 +18,7 @@ import tempfile
 import matplotlib.pyplot as plt
 import pandas.plotting as pdpt
 import collections
-import shutil
+import math
 
 from enb.config import get_options
 import enb.atable
@@ -30,8 +30,7 @@ from plugins import plugin_mcalic
 from plugins import plugin_ccsds122
 from plugins import plugin_fapec
 from plugins import plugin_flif
-from plugins import plugin_fse
-from plugins import plugin_huffman
+from plugins import plugin_fse_huffman
 from plugins import plugin_lcnl
 from plugins import plugin_marlin
 from plugins import plugin_zip
@@ -42,7 +41,7 @@ from plugins import plugin_kakadu
 if __name__ == '__main__':
     all_codecs = []
     all_families = []
-    
+
     jpeg_ls_family = enb.aanalysis.TaskFamily(label="JPEG-LS")
     for c in (plugin_jpeg.jpeg_codecs.JPEG_LS(max_error=0) for m in [0]):
         all_codecs.append(c)
@@ -81,13 +80,13 @@ if __name__ == '__main__':
     all_families.append(flif_family)
 
     fse_family = enb.aanalysis.TaskFamily(label="FSE")
-    for c in (plugin_fse.fse_codec.FSE(),):
+    for c in (plugin_fse_huffman.fse_codec.FSE(),):
         all_codecs.append(c)
         fse_family.add_task(c.name, f"{c.label}")
     all_families.append(fse_family)
 
     huffman_family = enb.aanalysis.TaskFamily(label="Huffman")
-    for c in (plugin_huffman.huffman_codec.Huffman(),):
+    for c in (plugin_fse_huffman.huffman_codec.Huffman(),):
         all_codecs.append(c)
         huffman_family.add_task(c.name, f"{c.label}")
     all_families.append(huffman_family)
@@ -122,26 +121,36 @@ if __name__ == '__main__':
                                 f"{c.label} {c.param_dict['quality_0_to_100']} {c.param_dict['compression_level']}")
     all_families.append(jpeg_xl_family)
 
-    for ht in [True, False]: # ht=True does not work for now
-        kakadu_family = enb.aanalysis.TaskFamily(label=f"Kakadu {'HT' if ht else ''}")
-        c = plugin_kakadu.kakadu_codec.Kakadu(ht=ht)
-        all_codecs.append(c)
-        kakadu_family.add_task(c.name + f"{' HT' if c.param_dict['ht'] else ''}",
-                               f"{c.label} HT {c.param_dict['ht']}")
-        all_families.append(kakadu_family)
+    for ht in [True, False]:
+        for lossless in [True, False]:
+            kakadu_family = enb.aanalysis.TaskFamily(label=f"Kakadu {'HT' if ht else ''}"
+                                                           + f"{'lossless' if lossless else 'lossy'}")
+            if lossless:
+                c = plugin_kakadu.kakadu_codec.Kakadu(ht=ht, lossless=True)
+            else:
+                c = plugin_kakadu.kakadu_codec.Kakadu(ht=ht, lossless=lossless, quality_factor=75)
+            all_codecs.append(c)
+            kakadu_family.add_task(c.name + f"{' HT' if c.param_dict['ht'] else ''}"
+                                   + f"{'lossless' if lossless else 'lossy'}",
+                                   f"{c.label} HT {c.param_dict['ht']} Quality Factor {c.param_dict['quality_factor']}")
+            all_families.append(kakadu_family)
 
-        kakadu_mct_family = enb.aanalysis.TaskFamily(label="Kakadu MCT {'HT' if ht else ''}")
-        c = plugin_kakadu.kakadu_codec.Kakadu_MCT(ht=ht)
-        all_codecs.append(c)
-        kakadu_mct_family.add_task(c.name + f"{' HT' if c.param_dict['ht'] else ''}",
-                                   f"{c.label} HT {c.param_dict['ht']}")
-        all_families.append(kakadu_mct_family)
+            kakadu_mct_family = enb.aanalysis.TaskFamily(label="Kakadu MCT {'HT' if ht else ''}"
+                                                               + f"{'lossless' if lossless else 'lossy'}")
+            c = plugin_kakadu.kakadu_codec.Kakadu_MCT(ht=ht, lossless=lossless)
+            all_codecs.append(c)
+            kakadu_mct_family.add_task(c.name + f"{' HT' if c.param_dict['ht'] else ''}"
+                                       + f"{'lossless' if lossless else 'lossy'}",
+                                       f"{c.label} HT {c.param_dict['ht']}")
+            all_families.append(kakadu_mct_family)
 
-    hevc_family = enb.aanalysis.TaskFamily(label="HEVC")
-    c = plugin_hevc.hevc_codec.HEVC()
-    all_codecs.append(c)
-    hevc_family.add_task(c.name, c.label)
-    all_families.append(hevc_family)
+    for label, c in [("HEVC lossless", plugin_hevc.hevc_codec.HEVC_lossless()),
+                     ("HEVC lossy QP25", plugin_hevc.hevc_codec.HEVC_lossy(qp=25)),
+                     ("HEVC lossy 0.25bps", plugin_hevc.hevc_codec.HEVC_lossy(bit_rate=0.25))]:
+        family = enb.aanalysis.TaskFamily(label=label)
+        all_codecs.append(c)
+        family.add_task(c.name, c.label)
+        all_families.append(family)
 
     label_by_group_name = dict()
     for family in all_families:
@@ -171,10 +180,10 @@ if __name__ == '__main__':
     min_compression_ratio_by_name = collections.defaultdict(lambda: float("inf"))
     max_compression_ratio_by_name = collections.defaultdict(lambda: float("-inf"))
 
-    for codec in table_codecs:
-        data_dict = dict(codec_name=codec.label)
+    for c in table_codecs:
+        data_dict = dict(codec_name=c.label)
         if options.verbose:
-            print(f"Testing codec {codec.name}...")
+            print(f"Testing codec {c.name}...")
         for d in target_dirs:
             column_name = os.path.basename(d)
             if options.verbose > 1:
@@ -186,64 +195,68 @@ if __name__ == '__main__':
                         tempfile.NamedTemporaryFile() as tmp_reconstructed:
                     state = "compressing"
                     try:
-                        codec.compress(original_path=input_path,
-                                       compressed_path=tmp_compressed.name,
-                                       original_file_info=row_info)
+                        c.compress(original_path=input_path,
+                                   compressed_path=tmp_compressed.name,
+                                   original_file_info=row_info)
                         state = "decompressing"
-                        codec.decompress(compressed_path=tmp_compressed.name,
-                                         reconstructed_path=tmp_reconstructed.name,
-                                         original_file_info=row_info)
+                        c.decompress(compressed_path=tmp_compressed.name,
+                                     reconstructed_path=tmp_reconstructed.name,
+                                     original_file_info=row_info)
+
+                        match = re.search(r"(u|s)(\d+)be", os.path.basename(os.path.dirname(input_path)))
+                        signed = match.group(1) == "s"
+                        bits_per_sample = int(match.group(2))
+
+                        min_compression_ratio_by_name[c.label] = min(
+                            min_compression_ratio_by_name[c.label],
+                            os.path.getsize(input_path) / os.path.getsize(tmp_compressed.name)
+                        )
+                        max_compression_ratio_by_name[c.label] = max(
+                            max_compression_ratio_by_name[c.label],
+                            os.path.getsize(input_path) / os.path.getsize(tmp_compressed.name)
+                        )
+
                         if not filecmp.cmp(input_path, tmp_reconstructed.name):
-                            if (isinstance(codec, enb.icompression.LosslessCodec)):
+                            if (not isinstance(c, enb.icompression.LossyCodec)
+                                    and not isinstance(c, enb.icompression.NearLosslessCodec)):
                                 data_dict[column_name] = "Not lossless"
                             else:
                                 data_dict[column_name] = "Lossy"
-                            
-                            print("[W]arning! not lossless!")
-
                             break
-
-
                         else:
-                            match = re.search(r"(u|s)(\d+)be", os.path.basename(os.path.dirname(input_path)))
-                            signed = match.group(1) == "s"
-                            bits_per_sample = int(match.group(2))
-                            min_lossless_bitdepth_by_name[codec.label] = min(
-                                min_lossless_bitdepth_by_name[codec.label],
-                                bits_per_sample)
-                            max_lossless_bitdepth_by_name[codec.label] = max(
-                                max_lossless_bitdepth_by_name[codec.label],
-                                bits_per_sample)
-
-                            min_compression_ratio_by_name[codec.label] = min(
-                                min_compression_ratio_by_name[codec.label],
-                                os.path.getsize(input_path) / os.path.getsize(tmp_compressed.name)
-                            )
-                            max_compression_ratio_by_name[codec.label] = max(
-                                max_compression_ratio_by_name[codec.label],
-                                os.path.getsize(input_path) / os.path.getsize(tmp_compressed.name)
-                            )
-
                             if options.verbose > 2:
                                 print("Losless!")
+
+                            min_lossless_bitdepth_by_name[c.label] = min(
+                                min_lossless_bitdepth_by_name[c.label],
+                                bits_per_sample)
+                            max_lossless_bitdepth_by_name[c.label] = max(
+                                max_lossless_bitdepth_by_name[c.label],
+                                bits_per_sample)
                     except Exception as ex:
                         data_dict[column_name] = "Not available"
-                        if options.verbose:
+                        if options.verbose > 1:
                             print(f"Error {state}; {ex}")
                         break
             else:
                 data_dict[column_name] = "Lossless"
-        data_dict["min_lossless_bitdepth"] = min_lossless_bitdepth_by_name[codec.name]
-        data_dict["max_lossless_bitdepth"] = max_lossless_bitdepth_by_name[codec.name]
-        df_capabilities.loc[codec.label] = pd.Series(data_dict)
+        data_dict["min_lossless_bitdepth"] = min_lossless_bitdepth_by_name[c.name]
+        data_dict["max_lossless_bitdepth"] = max_lossless_bitdepth_by_name[c.name]
+        df_capabilities.loc[c.label] = pd.Series(data_dict)
 
     df_capabilities["lossless_range"] = df_capabilities["codec_name"].apply(
-        lambda name: f"{min_lossless_bitdepth_by_name[name]} "
-                     f"- {max_lossless_bitdepth_by_name[name]} "
+        lambda name: f"{min_lossless_bitdepth_by_name[name]}"
+                     f":{max_lossless_bitdepth_by_name[name]}"
+        if math.isfinite(float(min_lossless_bitdepth_by_name[name]))
+           and math.isfinite(float(max_lossless_bitdepth_by_name[name]))
+        else "None"
     )
     df_capabilities["cr_range"] = df_capabilities["codec_name"].apply(
-        lambda name: f"{min_compression_ratio_by_name[name]:.2f} "
-                     f"- {max_compression_ratio_by_name[name]:.2f} "
+        lambda name: f"{min_compression_ratio_by_name[name]:.2f}"
+                     f":{max_compression_ratio_by_name[name]:.2f}"
+        if math.isfinite(float(min_compression_ratio_by_name[name]))
+           and math.isfinite(float(max_compression_ratio_by_name[name]))
+        else "None"
     )
 
     del df_capabilities["min_lossless_bitdepth"]
@@ -252,6 +265,7 @@ if __name__ == '__main__':
     df_capabilities.to_csv("full_df_capabilitites.csv")
 
     import pprint
+
     pprint.pprint(min_lossless_bitdepth_by_name)
     pprint.pprint(max_lossless_bitdepth_by_name)
 
@@ -284,7 +298,7 @@ if __name__ == '__main__':
             df_colors[d] = df_capabilities[d].apply(
                 lambda x: "#55ff55" if x == "Lossless"
                 else "#ff5555" if x == "Not lossless"
-                else "#6666ff" if x == "Lossy"
+                else "#8cb4ff" if x == "Lossy"
                 else "#fbf3b5")
 
         for old, new in zip(old_col_names, new_col_names):
