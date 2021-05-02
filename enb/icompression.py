@@ -34,7 +34,7 @@ from enb.config import get_options
 options = get_options()
 
 
-class CompressionResults(recordclass.RecordClass):
+    class CompressionResults(recordclass.RecordClass):
     """Base class that defines the minimal fields that are returned by a
     call to a coder's compress() method (or produced by
     the CompressionExperiment instance)

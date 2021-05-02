@@ -7,6 +7,8 @@ options = get_options(from_main=False)
 
 
 if __name__ == '__main__':
+
+
     models = []
     models.append(model_Resnet18.model_resnet18.Resnet18(2))
 
