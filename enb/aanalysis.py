@@ -36,17 +36,20 @@ fill_style_cycle = ["full"] * len(marker_cycle) + ["none"] * len(marker_cycle)
 @config.propagates_options
 def ray_render_plds_by_group(pds_by_group_name, output_plot_path, column_properties, horizontal_margin, global_x_label,
                              y_min=None, y_max=None, y_labels_by_group_name=None, color_by_group_name=None,
+                             overwrite_colors=True,
                              x_min=None, x_max=None,
                              global_y_label="Relative frequency", combine_groups=False, semilog_hist_min=1e-10,
                              options=None,  # Used by @config.propagates_options
                              group_name_order=None, fig_width=None, fig_height=None,
                              global_y_label_pos=None, legend_column_count=None,
-                             show_grid=None):
+                             show_grid=None,
+                             x_tick_list=None, x_tick_label_list=None, x_tick_label_angle=0):
     """Ray wrapper for render_plds_by_group"""
     # (options automatically propagated)
     return render_plds_by_group(pds_by_group_name=pds_by_group_name, output_plot_path=output_plot_path,
                                 column_properties=column_properties, global_x_label=global_x_label,
                                 horizontal_margin=horizontal_margin, y_min=y_min, y_max=y_max,
+                                overwrite_colors=overwrite_colors,
                                 x_min=x_min, x_max=x_max,
                                 y_labels_by_group_name=y_labels_by_group_name,
                                 color_by_group_name=color_by_group_name, global_y_label=global_y_label,
@@ -54,11 +57,15 @@ def ray_render_plds_by_group(pds_by_group_name, output_plot_path, column_propert
                                 group_name_order=group_name_order,
                                 fig_width=fig_width, fig_height=fig_height,
                                 global_y_label_pos=global_y_label_pos, legend_column_count=legend_column_count,
-                                show_grid=show_grid)
+                                show_grid=show_grid,
+                                x_tick_list=x_tick_list,
+                                x_tick_label_list=x_tick_label_list,
+                                x_tick_label_angle=x_tick_label_angle)
 
 
 def render_plds_by_group(pds_by_group_name, output_plot_path, column_properties, global_x_label,
                          horizontal_margin=0, x_min=None, x_max=None,
+                         overwrite_colors=True,
                          y_min=None, y_max=None, y_labels_by_group_name=None,
                          color_by_group_name=None, global_y_label="Relative frequency",
                          combine_groups=False, semilog_hist_min=1e-10,
@@ -72,6 +79,8 @@ def render_plds_by_group(pds_by_group_name, output_plot_path, column_properties,
     :param pds_by_group_name: dictionary of lists of PlottableData instances
     :param output_plot_path: path to the file to be created with the plot
     :param column_properties: ColumnProperties instance for the column being plotted
+    :param overwrite_colors: if True, all plottable data in each group is set to the same color,
+      defined by color_cycle.
     :param x_min, x_max: range of values to be plotted in the X axis. If any is None,
       the plot automatically adjusts to column_properties, or the data if limits
       are not specified there either.
@@ -106,8 +115,8 @@ def render_plds_by_group(pds_by_group_name, output_plot_path, column_properties,
     legend_column_count = options.legend_column_count if legend_column_count is None else legend_column_count
     if legend_column_count:
         for name, pds in pds_by_group_name.items():
-            for pd in pds:
-                pd.legend_column_count = legend_column_count
+            for pld in pds:
+                pld.legend_column_count = legend_column_count
 
     y_min = column_properties.hist_min if y_min is None else y_min
     y_min = max(semilog_hist_min,
@@ -116,12 +125,12 @@ def render_plds_by_group(pds_by_group_name, output_plot_path, column_properties,
 
     if group_name_order is None:
         sorted_group_names = sorted(pds_by_group_name.keys(),
-                                    key=lambda s: "" if s == "all" else s.strip().lower())
+                                    key=lambda s: "" if s == "all" else str(s).strip().lower())
     else:
         for group_name in group_name_order:
             assert group_name in pds_by_group_name, \
                 f"The provided list group_name_order contains the group name {group_name}, " \
-                f"which is not cotained in the provided groups ({pds_by_group_name})."
+                f"which is not contained in the provided groups ({pds_by_group_name})."
         sorted_group_names = list(group_name_order)
 
     y_labels_by_group_name = {g: g for g in sorted_group_names} \
@@ -153,16 +162,17 @@ def render_plds_by_group(pds_by_group_name, output_plot_path, column_properties,
 
     global_x_min = float("inf")
     global_x_max = float("-inf")
-    for pd in (plottable for pds in pds_by_group_name.values() for plottable in pds):
-        global_x_min = min(global_x_min, min(x if not math.isinf(x) else 0 for x in pd.x_values))
-        global_x_max = max(global_x_max, max(x if not math.isinf(x) else 1 for x in pd.x_values))
+    for pld in (plottable for pds in pds_by_group_name.values() for plottable in pds):
+        global_x_min = min(global_x_min,
+                           min(x if not math.isinf(x) else 0 for x in pld.x_values) if pld.x_values else global_x_min)
+        global_x_max = max(global_x_max,
+                           max(x if not math.isinf(x) else 1 for x in pld.x_values) if pld.x_values else global_x_max)
     if global_x_max - global_x_min > 1:
         global_x_min = math.floor(global_x_min) if not math.isinf(global_x_min) else global_x_min
         global_x_max = math.ceil(global_x_max) if not math.isinf(global_x_max) else global_x_max
     if column_properties:
         global_x_min = column_properties.plot_min if column_properties.plot_min is not None else global_x_min
         global_x_max = column_properties.plot_max if column_properties.plot_max is not None else global_x_max
-
     if global_x_max is None:
         global_x_min = 1
 
@@ -171,15 +181,15 @@ def render_plds_by_group(pds_by_group_name, output_plot_path, column_properties,
         for pld in pds_by_group_name[group_name]:
             pld.x_label = None
             pld.y_label = None
-            d = dict(color=group_color)
+            d = dict()
+            if overwrite_colors:
+                pld.color = group_color
+            d.update(color=pld.color)
             try:
                 pld.extra_kwargs.update(d)
             except AttributeError:
                 pld.extra_kwargs = d
 
-            # if column_properties and column_properties.plot_max is not None:
-            #     pld.x_values = [x for x in pld.x_values if x <= column_properties.plot_max + horizontal_margin]
-            #     pld.y_values = pld.y_values[:len(pld.x_values)]
             try:
                 pld.render(axes=group_axes)
             except Exception as ex:
@@ -227,7 +237,14 @@ def render_plds_by_group(pds_by_group_name, output_plot_path, column_properties,
         x_tick_labels = [column_properties.hist_label_dict[x] for x in x_tick_values]
         plt.xticks(x_tick_values, x_tick_labels)
 
-    xlim = [global_x_min - horizontal_margin / 2, global_x_max + horizontal_margin / 2]
+    xlim = [global_x_min - horizontal_margin, global_x_max + horizontal_margin]
+
+    if global_y_label:
+        fig.text(global_y_label_pos, 0.5, global_y_label, va='center', rotation='vertical')
+
+    if options.displayed_title is not None:
+        plt.suptitle(options.displayed_title)
+
     xlim[0] = xlim[0] if x_min is None else x_min
     xlim[1] = xlim[1] if x_max is None else x_max
     plt.xlim(*xlim)
@@ -237,12 +254,6 @@ def render_plds_by_group(pds_by_group_name, output_plot_path, column_properties,
         plt.subplots_adjust(hspace=0.75)
     elif len(sorted_group_names) > 5:
         plt.subplots_adjust(hspace=0.3)
-
-    if global_y_label:
-        fig.text(global_y_label_pos, 0.5, global_y_label, va='center', rotation='vertical')
-
-    if options.displayed_title is not None:
-        plt.suptitle(options.displayed_title)
 
     if x_tick_list is not None:
         if not x_tick_label_list:
@@ -254,10 +265,13 @@ def render_plds_by_group(pds_by_group_name, output_plot_path, column_properties,
         assert x_tick_list is not None
 
     show_grid = options.show_grid if show_grid is None else show_grid
+
     if show_grid:
-        for axes in group_axis_list:
-            axes.grid(alpha=0.25)
-        plt.grid(alpha=0.25)
+        if combine_groups:
+            plt.grid("major", alpha=0.5)
+        else:
+            for axes in group_axis_list:
+                axes.grid("major", alpha=0.5)
 
     plt.savefig(output_plot_path, bbox_inches="tight", dpi=300)
     plt.close()
@@ -313,8 +327,7 @@ class ScalarDistributionAnalyzer(Analyzer):
 
     def analyze_df(self, full_df, target_columns, output_plot_dir=None, output_csv_file=None, column_to_properties=None,
                    group_by=None, group_name_order=None, show_global=True, show_count=True, version_name=None,
-                   adjust_height=False,
-                   y_labels_by_group_name=None):
+                   adjust_height=False, y_labels_by_group_name=None):
         """Perform an analysis of target_columns, grouping as specified.
 
         :param adjust_height: adjust height to the maximum height contained in the y_values
@@ -337,9 +350,6 @@ class ScalarDistributionAnalyzer(Analyzer):
         min_max_by_column = get_scalar_min_max_by_column(
             df=full_df, target_columns=target_columns, column_to_properties=column_to_properties)
         min_max_by_column = dict(min_max_by_column)
-        for c in min_max_by_column:
-            for i in range(2):
-                min_max_by_column[c][i] = None if not math.isinf(min_max_by_column[c][i]) else None
 
         pooler_suffix_tuples = [(pd.DataFrame.min, "min"), (pd.DataFrame.max, "max"),
                                 (pd.DataFrame.mean, "avg"), (pd.DataFrame.std, "std")]
@@ -429,8 +439,15 @@ class ScalarDistributionAnalyzer(Analyzer):
             if y_labels_by_group_name is None:
                 y_labels_by_group_name = {
                     group: f"{group} ({length})" if show_count else f"{group}"
-                    for group, length in
-                    lengths_by_group_name.items()}
+                    for group, length in lengths_by_group_name.items()}
+            elif show_count:
+                for group, length in lengths_by_group_name.items():
+                    try:
+                        affix = f" ({length})"
+                        if not y_labels_by_group_name[group].endswith(affix):
+                            y_labels_by_group_name[group] += f" ({length})"
+                    except KeyError:
+                        y_labels_by_group_name[group] = f"{group} ({length})" if show_count else f"{group}"
 
             expected_return_ids.append(
                 ray_render_plds_by_group.remote(
@@ -459,13 +476,7 @@ def scalar_column_to_pds(column, properties, df, min_max_by_column, hist_bin_cou
     relative distribution
     """
     column_df = df[column]
-    # Histogram with bins in [0,1] that sum 1
-    range = [0, 0]
-    try:
-        range[0] = min(range[0], min(v for v in df[column] if not math.isinf(v)))
-        range[1] = max(range[1], max(v for v in df[column] if not math.isinf(v)))
-    except ValueError:
-        pass
+    range = tuple(min_max_by_column[column])
 
     hist_y_values, bin_edges = np.histogram(
         column_df.values, bins=hist_bin_count, range=range, density=False)
@@ -474,11 +485,15 @@ def scalar_column_to_pds(column, properties, df, min_max_by_column, hist_bin_cou
     if abs(sum(hist_y_values) - 1) > 1e-10:
         if math.isinf(df[column].max()) or math.isinf(df[column].min()):
             if options.verbose:
-                print(f"[W]arning: Infinite values are not accounted for in {column}, "
-                      f"which represent {100 * (1 - sum(hist_y_values)):.1f}% of the values.")
+                print(f"[W]arning: not all samples included in the scalar distribution for {column} "
+                      f"(used {100 * (sum(hist_y_values)):.1f}% of the samples)."
+                      f"Note that infinite values are not accounted for, and the plot_min "
+                      f"and plot_max column properties affect this range.")
         else:
-            raise Exception("Unfortunately, some values seem to be missing - check for errors! "
-                            f"sum(hist_y_values)={sum(hist_y_values)}")
+            if options.verbose:
+                print(f"[W]arning: not all samples included in the scalar distribution for {column} "
+                      f"(used {100 * (sum(hist_y_values)):.1f}% of the samples)."
+                      f"Note that plot_min and plot_max column properties might be affecting this range.")
 
     hist_y_values = hist_y_values / hist_y_values.sum()
 
@@ -520,7 +535,11 @@ def pool_scalar_into_analysis_df(analysis_df, analysis_label, data_df, pooler_su
 
 def get_scalar_min_max_by_column(df, target_columns, column_to_properties):
     """Get a dictionary indexed by column name with minimum and maximum values.
-    (useful e.g., for normalized processing of subgroups)
+    (useful e.g., for normalized processing of subgroups).
+
+    If column to properties is set, for a column, the minimum and maximum are taken from them.
+    None limits are taken from the minimum and maximum values that are not infinite.
+
     """
     min_max_by_column = {}
     for column in target_columns:
@@ -529,18 +548,24 @@ def get_scalar_min_max_by_column(df, target_columns, column_to_properties):
                                          column_to_properties[column].plot_max]
         else:
             min_max_by_column[column] = [None, None]
+
         if min_max_by_column[column][0] is None:
             min_max_by_column[column][0] = df[column].min()
+            if math.isinf(min_max_by_column[column][0]) or math.isnan(min_max_by_column[column][0]):
+                min_max_by_column[column][0] = min(v for v in d[column]
+                                                   if not math.isinf(v) and not math.isnan(v))
+
         if min_max_by_column[column][1] is None:
             min_max_by_column[column][1] = df[column].max()
+            if math.isinf(min_max_by_column[column][1]) or math.isnan(min_max_by_column[column][1]):
+                min_max_by_column[column][1] = max(v for v in d[column]
+                                                   if not math.isinf(v) and not math.isnan(v))
 
         if min_max_by_column[column][1] > 1:
-            if not math.isnan(min_max_by_column[column][0]) and not math.isinf(min_max_by_column[column][0]):
-                min_max_by_column[column][0] = \
-                    math.floor(min_max_by_column[column][0])
-            if not math.isnan(min_max_by_column[column][1]) and not math.isinf(min_max_by_column[column][1]):
-                min_max_by_column[column][1] = \
-                    math.ceil(min_max_by_column[column][1])
+            if column not in column_to_properties or column_to_properties[column].plot_min is None:
+                min_max_by_column[column][0] = math.floor(min_max_by_column[column][0])
+            if column not in column_to_properties or column_to_properties[column].plot_max is None:
+                min_max_by_column[column][1] = math.ceil(min_max_by_column[column][1])
 
     return min_max_by_column
 
@@ -563,6 +588,7 @@ class HistogramDistributionAnalyzer(Analyzer):
     alpha_global = 0.5
     alpha_individual = 0.25
 
+    # Default histogram bin width
     histogram_bin_width = 1
 
     # Fraction in 0,1 of the bar width for histogram
@@ -585,7 +611,7 @@ class HistogramDistributionAnalyzer(Analyzer):
 
         :param adjust_height:
         :param full_df: full df from which the column is to be extracted
-        :param target_columns: list of column names containing tensor (mapping) data
+        :param target_columns: list of column names containing tensor (dictionary) data
         :param output_plot_dir: path of the directory where the plot is to be saved
         :param output_csv_file: path of the csv file where basic analysis results are stored
         :param column_to_properties: dictionary with ColumnProperties entries
@@ -1179,10 +1205,217 @@ class TwoColumnLineAnalyzer(Analyzer):
                 x_max=global_max_x,
                 y_min=column_to_properties[column_name_y].plot_min,
                 y_max=column_to_properties[column_name_y].plot_max,
-                horizontal_margin=0.05 * (global_max_x - global_min_x) if global_max_x is not None and global_min_x is not None else 0,
+                horizontal_margin=0.05 * (
+                        global_max_x - global_min_x) if global_max_x is not None and global_min_x is not None else 0,
                 legend_column_count=legend_column_count,
                 combine_groups=True,
                 group_name_order=[f.label for f in group_by])
+
+
+class ScalarDictAnalyzer(Analyzer):
+    """Analyzer to plot columns that contain dictionary data with scalar entries.
+    """
+
+    def analyze_df(self, full_df, target_columns, combine_keys=None,
+                   key_to_x=None, key_list=None, output_plot_dir=None, output_csv_file=None, column_to_properties=None,
+                   group_by=None, group_name_order=None, show_global=True, show_count=True, version_name=None,
+                   show_std_bar=True, show_std_band=False,
+                   show_individual_results=False,
+                   x_tick_label_angle=90, show_grid=True,
+                   combine_groups=False):
+        """For each target column, analyze dictionary values stored in each cell.
+        Scalar analysis is applied on each key found in the dictionaries.
+
+        :param full_df: df to be analyzer
+        :param target_columns: either a string with the name of a column, or a list of column names. In either case,
+          all referenced columns must contain dictionary data with scalar (integer, float, etc) values.
+        :param combine_keys: if not None, it must be a callable that takes an input dictionary and returns another one.
+          This can be used to combine groups of keys into a single one before analysis.
+        :param key_to_x: if None, found keys are sorted alphabetically and placed at 0, 1, ..., etc.
+          If not None, if must be a dictionary so that dictionary keys (after applying @a combine_keys, if present),
+          are all present in key_to_x, and values are real values (typically a permutation of the default key_to_x).
+        :param key_list: if not None, it must be a list of the dictionary keys to be displayed, with the desired order.
+        :param show_std_bar: if True, vertical error bars are shown centered on each average point, plus/minus one
+          standard deviation.
+        :param show_std_band: if True, a band of width 2*sigma is added to each line.
+
+        All remaining parameters are as defined in :class:`Analyzer` or :ref:`render_plds_by_group`.
+        """
+        target_columns = target_columns if not isinstance(target_columns, str) else [target_columns]
+        output_plot_dir = output_plot_dir if output_plot_dir is not None else options.plot_dir
+
+        if combine_keys is not None:
+            full_df = full_df.copy()
+
+        enb.ray_cluster.init_ray()
+
+        keys_by_column = {}
+        column_to_properties = dict() if column_to_properties is None else dict(column_to_properties)
+        for column in target_columns:
+            if column not in column_to_properties:
+                column_to_properties[column] = enb.atable.ColumnProperties(name=column, has_dict_values=True)
+            if not column_to_properties[column].has_dict_values:
+                raise Exception(f"Not possible to plot column {column}, has_dict_values was not set to True")
+
+            if combine_keys is not None:
+                full_df[column] = full_df[column].apply(combine_keys)
+            keys_by_column[column] = \
+                set(full_df[column].apply(lambda d: list(d.keys())).sum())
+
+        if key_list is None:
+            all_keys = sorted(set(itertools.chain(*keys_by_column.values())))
+        else:
+            all_keys = list(key_list)
+        key_to_x = {k: i for i, k in enumerate(all_keys)}
+
+        column_to_id_by_group = collections.defaultdict(dict)
+        column_to_pds_by_group = collections.defaultdict(dict)
+        if group_by is not None:
+            for group_name, group_df in full_df.groupby(group_by):
+                df_id = ray.put(group_df)
+                for column in target_columns:
+                    column_to_id_by_group[column][group_name] = scalar_dict_to_pds.remote(
+                        df=df_id, column=ray.put(column),
+                        column_properties=ray.put(column_to_properties[column]),
+                        group_label=ray.put(group_name),
+                        key_to_x=ray.put(key_to_x),
+                        show_std_bar=ray.put(show_std_bar),
+                        show_std_band=ray.put(show_std_band),
+                        show_individual_results=ray.put(show_individual_results))
+        if group_by is None or show_global is True:
+            df_id = ray.put(full_df)
+            for column in target_columns:
+                column_to_id_by_group[column]["all"] = scalar_dict_to_pds.remote(
+                    df=df_id, column=ray.put(column),
+                    column_properties=ray.put(column_to_properties[column]),
+                    group_label=ray.put("all"),
+                    key_to_x=ray.put(key_to_x),
+                    show_std_bar=ray.put(show_std_bar),
+                    show_std_band=ray.put(show_std_band),
+                    show_individual_results=ray.put(show_individual_results))
+
+        group_names = set()
+        for column, group_to_id in column_to_id_by_group.items():
+            for group_name, id in group_to_id.items():
+                column_to_pds_by_group[column][group_name] = ray.get(id)
+                group_names.add(group_name)
+
+        group_names = sorted(str(n) for n in group_names)
+
+        for column, pds_by_group in column_to_pds_by_group.items():
+            for group_name, pds in pds_by_group.items():
+                for pld in pds:
+                    pld.color = color_cycle[group_names.index(str(pld.label)) % len(color_cycle)]
+                    if not combine_groups or not isinstance(pld, plotdata.LineData):
+                        pld.label = None
+
+        render_ids = []
+        for column, pds_by_group in column_to_pds_by_group.items():
+            output_plot_path = os.path.join(output_plot_dir, f"scalar_dict_{column}.pdf")
+            global_x_label = f"{column_to_properties[column].label}"
+            margin = max(key_to_x.values()) / (10 * len(key_to_x)) if key_to_x else 0
+            x_min = -margin
+            x_max = max(key_to_x.values()) + margin if key_to_x else None
+            y_min = column_to_properties[column].plot_min
+            y_max = column_to_properties[column].plot_max
+
+            try:
+                original_fig_width = options.fig_width
+                options.fig_width = max(options.fig_width, len(all_keys) / 5)
+
+                if not options.sequential:
+                    render_ids.append(ray_render_plds_by_group.remote(
+                        pds_by_group_name=ray.put(pds_by_group),
+                        output_plot_path=ray.put(output_plot_path),
+                        column_properties=ray.put(column_to_properties[column]),
+                        global_x_label=ray.put(global_x_label),
+                        global_y_label=ray.put(""),
+                        x_tick_list=ray.put([key_to_x[k] for k in all_keys]),
+                        x_tick_label_list=ray.put(all_keys),
+                        x_tick_label_angle=ray.put(x_tick_label_angle),
+                        horizontal_margin=ray.put(0.1),
+                        x_min=ray.put(x_min), x_max=ray.put(x_max),
+                        y_min=ray.put(y_min), y_max=ray.put(y_max),
+                        show_grid=ray.put(show_grid),
+                        combine_groups=ray.put(combine_groups),
+                        overwrite_colors=ray.put(False),
+                        options=ray.put(options)))
+                else:
+                    render_plds_by_group(pds_by_group_name=pds_by_group,
+                                         output_plot_path=output_plot_path,
+                                         column_properties=column_to_properties[column],
+                                         global_x_label=global_x_label,
+                                         global_y_label="",
+                                         x_tick_list=[key_to_x[k] for k in all_keys],
+                                         x_tick_label_list=all_keys,
+                                         x_tick_label_angle=x_tick_label_angle,
+                                         x_min=x_min, x_max=x_max,
+                                         y_min=y_min, y_max=y_max,
+                                         combine_groups=combine_groups,
+                                         overwrite_colors=False,
+                                         show_grid=show_grid)
+
+                _ = [ray.get(id) for id in render_ids]
+
+            finally:
+                options.fig_width = original_fig_width
+
+
+@ray.remote
+def scalar_dict_to_pds(df, column, column_properties, key_to_x,
+                       group_label=None,
+                       show_std_bar=True, show_std_band=False,
+                       show_individual_results=False):
+    key_to_stats = dict()
+    finite_data_by_column = dict()
+    for k in key_to_x.keys():
+        column_data = df[column].apply(lambda d: d[k] if k in d else float("inf"))
+        finite_data_by_column[column] = column_data[column_data.apply(lambda v : math.isfinite(v))]
+        description = finite_data_by_column[column].describe()
+        if len(finite_data_by_column[column]) > 0:
+            key_to_stats[k] = dict(min=description["min"],
+                                   max=description["max"],
+                                   std=description["std"],
+                                   mean=description["mean"])
+
+    plot_data_list = []
+    avg_x_values = []
+    avg_y_values = []
+    std_values = []
+    for k, stats in key_to_stats.items():
+        avg_x_values.append(key_to_x[k])
+        avg_y_values.append(stats["mean"])
+        std_values.append(stats["std"] if math.isfinite(stats["std"]) else 0)
+    plot_data_list.append(plotdata.LineData(x_values=avg_x_values, y_values=avg_y_values))
+
+    if show_std_band:
+        plot_data_list.append(plotdata.HorizontalBand(
+            x_values=avg_x_values,
+            y_values=avg_y_values,
+            pos_width_values=std_values,
+            neg_width_values=std_values))
+
+    if show_std_bar:
+        plot_data_list.append(plotdata.ErrorLines(
+            x_values=avg_x_values, y_values=avg_y_values,
+            err_neg_values=std_values,
+            err_pos_values=std_values,
+            line_width=1,
+            vertical=True, cap_size=2, alpha=0.3))
+
+    if show_individual_results:
+        for k, stats in key_to_stats.items():
+            plot_data_list.append(plotdata.ScatterData(
+                x_values=[key_to_x[k]] * len(finite_data_by_column[column]),
+                y_values=finite_data_by_column[column],
+                alpha=0.8))
+            plot_data_list[-1].marker_size = 5
+
+    # This is used in ScalarDictAnalyzer.analyze_df to set the right colors
+    for pld in plot_data_list:
+        pld.label = group_label
+
+    return plot_data_list
 
 
 class TaskFamily:

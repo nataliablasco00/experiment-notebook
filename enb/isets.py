@@ -155,14 +155,14 @@ class ImagePropertiesTable(ImageGeometryTable):
 
     @atable.column_function(
         "entropy_1B_bps", label="Entropy (bps, 1-byte samples)", plot_min=0, plot_max=8)
-    def set_file_entropy(self, file_path, row):
+    def set_file_1B_entropy(self, file_path, row):
         """Return the zero-order entropy of the data in file_path (1-byte samples are assumed)
         """
         row[_column_name] = entropy(np.fromfile(file_path, dtype="uint8").flatten())
 
     @atable.column_function(
         "entropy_2B_bps", label="Entropy (bps, 2-byte samples)", plot_min=0, plot_max=16)
-    def set_file_entropy(self, file_path, row):
+    def set_file_2B_entropy(self, file_path, row):
         """Set the zero-order entropy of the data in file_path (2-byte samples are assumed)
         if bytes_per_sample is a multiple of 2, otherwise the column is set to -1
         """
@@ -267,6 +267,10 @@ def dump_array_bsq(array, file_or_path, mode="wb", dtype=None):
 
     if dtype is not None and array.dtype != dtype:
         array = array.astype(dtype)
+
+    # Expand 2D arrays to 3D trivially
+    if len(array.shape) == 2:
+        array = np.expand_dims(array, 2)
 
     array = array.swapaxes(0, 2)
     array.tofile(file_or_path)

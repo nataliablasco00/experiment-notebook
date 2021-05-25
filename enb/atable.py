@@ -15,16 +15,12 @@
 * For example
 
   ::
+        import enb
 
-        import ray
-        from enb import atable
+        class Subclass(enb.atable.ATable):
+            def column_index_length(self, index, row):
+                return len(index)
 
-        class Subclass(atable.ATable):
-            @atable.column_function("index_length")
-            def set_index_length(self, index, row):
-                row["index_length"] = len(index)
-
-        ray.init()
         sc = Subclass(index="index")
         df = sc.get_df(target_indices=["a"*i for i in range(10)])
         print(df.head())
@@ -62,6 +58,7 @@ import datetime
 import inspect
 import traceback
 import ray
+import ast
 
 from enb.config import get_options
 from enb import config
@@ -156,7 +153,7 @@ class ColumnProperties:
         """
         self.name = name
         self.fun = fun
-        self.label = label
+        self.label = label if label is not None else str(name)
         self.plot_min = plot_min
         self.plot_max = plot_max
         self.semilog_x = semilog_x
@@ -211,10 +208,18 @@ class MetaTable(type):
         # function name without it being decorated as column function
         # (unexpected behavior)
         for column, properties in subclass.column_to_properties.items():
-            defining_class_name = get_class_that_defined_method(properties.fun).__name__
+            try:
+                defining_class_name = get_class_that_defined_method(properties.fun).__name__
+            except AttributeError:
+                defining_class_name = None
             if defining_class_name != subclass.__name__:
                 ctp_fun = properties.fun
-                sc_fun = getattr(subclass, properties.fun.__name__)
+                try:
+                    sc_fun = getattr(subclass, properties.fun.__name__)
+                except AttributeError:
+                    # Not overwritten, nothing else to check here
+                    continue
+
                 if ctp_fun != sc_fun:
                     if get_defining_class_name(ctp_fun) != get_defining_class_name(sc_fun):
                         if hasattr(sc_fun, "_redefines_column"):
@@ -232,15 +237,50 @@ class MetaTable(type):
                                   f"or simply with @atable.redefines_column to maintain the same "
                                   f"difinition")
 
-        # Add pending methods (declared as columns before subclass existed)
-        for classname, fun, cp, kwargs in cls.pendingdefs_classname_fun_columnproperties_kwargs:
-            if classname != name:
-                raise SyntaxError(f"Not expected to find a decorated function {fun.__name__}, "
-                                  f"classname={classname} when defining {name}.")
+        # Add pending decorated and column_* methods (declared as columns before subclass existed)
+        inherited_classname_fun_columnproperties_kwargs = [t for t in
+                                                           cls.pendingdefs_classname_fun_columnproperties_kwargs
+                                                           if t[0] != subclass.__name__]
+        decorated_classname_fun_columnproperties_kwargs = [t for t in
+                                                           cls.pendingdefs_classname_fun_columnproperties_kwargs
+                                                           if t[0] == subclass.__name__]
+
+        for classname, fun, cp, kwargs in inherited_classname_fun_columnproperties_kwargs:
             ATable.add_column_function(cls=subclass, column_properties=cp, fun=fun, **kwargs)
+
+        funname_to_pending_entry = {t[1].__name__: t for t in decorated_classname_fun_columnproperties_kwargs}
+        for fun in (f for f in subclass.__dict__.values() if inspect.isfunction(f)):
+            try:
+                # Add decorated function
+                classname, fun, cp, kwargs = funname_to_pending_entry[fun.__name__]
+                ATable.add_column_function(cls=subclass, column_properties=cp, fun=fun, **kwargs)
+                del funname_to_pending_entry[fun.__name__]
+            except KeyError:
+                assert all(cp.fun is not fun for cp in subclass.column_to_properties.values())
+                if not fun.__name__.startswith("column_"):
+                    continue
+                column_name = fun.__name__[len("column_"):]
+                if not column_name:
+                    raise SyntaxError(f"Function name '{fun.__name__}' not allowed in ATable subclasses")
+
+                wrapper = get_auto_column_wrapper(fun=fun)
+                cp = ColumnProperties(name=column_name, fun=wrapper)
+                ATable.add_column_function(cls=subclass, column_properties=cp, fun=wrapper)
+
+        assert len(funname_to_pending_entry) == 0, (subclass, funname_to_pending_entry)
+
         cls.pendingdefs_classname_fun_columnproperties_kwargs.clear()
 
         return subclass
+
+
+def get_auto_column_wrapper(fun):
+    # Function is not decorated: add wrapper if starts with column_*
+    def wrapper(self, index, row):
+        f"""Column wrapper{fun.__name__}"""
+        row[_column_name] = fun(self, index, row)
+
+    return wrapper
 
 
 class ATable(metaclass=MetaTable):
@@ -433,7 +473,7 @@ class ATable(metaclass=MetaTable):
         """
         overwrite = overwrite if overwrite is not None else options.force
         parallel_row_processing = parallel_row_processing if parallel_row_processing is not None \
-                else not options.sequential
+            else not options.sequential
         target_indices = list(target_indices)
         assert len(target_indices) > 0, "At least one index must be provided"
 
@@ -452,13 +492,11 @@ class ATable(metaclass=MetaTable):
             df = self.get_df_one_chunk(
                 target_indices=chunk, target_columns=target_columns, fill=fill,
                 overwrite=overwrite, parallel_row_processing=parallel_row_processing)
-
         if len(chunk_list) > 1:
             # Get the full df if more thank one chunk is requested
             df = self.get_df_one_chunk(
                 target_indices=target_indices, target_columns=target_columns, fill=fill,
                 overwrite=overwrite, parallel_row_processing=parallel_row_processing)
-
         return df
 
     def get_df_one_chunk(self, target_indices, target_columns=None,
@@ -563,7 +601,7 @@ class ATable(metaclass=MetaTable):
         if not options.no_new_results and self.csv_support_path and \
                 (not index_exception_list or not options.discard_partial_results):
             os.makedirs(os.path.dirname(os.path.abspath(self.csv_support_path)), exist_ok=True)
-            table_df.to_csv(self.csv_support_path, index=False)
+            self.write_persistence(table_df)
 
         # A DataFrame is NOT returned if any error is produced
         if index_exception_list:
@@ -587,6 +625,16 @@ class ATable(metaclass=MetaTable):
             f"{(len(table_df), len(target_indices))}"
 
         return table_df
+
+    def write_persistence(self, df : pd.DataFrame, output_csv=None):
+        """Dump a dataframe produced by this table.
+
+        :param output_csv: if None, self.csv_support_path is used as the output path.
+        """
+        output_csv = output_csv if output_csv is not None else self.csv_support_path
+        if options.verbose > 1:
+            print(f"[D]umping CSV {len(df)} entries -> {output_csv}")
+        df.to_csv(output_csv, index=False)
 
     def get_matlab_struct_str(self, target_indices):
         """Return a string containing MATLAB code that defines a list of structs
@@ -684,7 +732,7 @@ class ATable(metaclass=MetaTable):
                 if options.verbose > 1:
                     print(f"[W]arning: csv support file for {self} not set")
                 raise FileNotFoundError(self.csv_support_path)
-            
+
             loaded_df = pd.read_csv(self.csv_support_path)
             if options.verbose > 2:
                 print(f"[I]nfo: loaded df from with len {len(loaded_df)}")
@@ -701,7 +749,9 @@ class ATable(metaclass=MetaTable):
             loaded_df = loaded_df[self.indices_and_columns]
             for column, properties in self.column_to_properties.items():
                 if properties.has_dict_values:
-                    loaded_df[column] = loaded_df[column].apply(parse_dict_string)
+                    loaded_df[column] = loaded_df[column].apply(ast.literal_eval)
+                    assert (loaded_df[column].apply(lambda v: isinstance(v, dict))).all(), \
+                        f"Not all entries are dicts for {column}"
         except (FileNotFoundError, pd.errors.EmptyDataError) as ex:
             if self.csv_support_path is None:
                 if options.verbose > 2:
@@ -725,6 +775,10 @@ class ATable(metaclass=MetaTable):
             print(f"Error loading table from {self.csv_support_path}")
             raise ex
         return loaded_df
+
+    @property
+    def name(self):
+        return f"{self.__class__.__name__}"
 
 
 def string_or_float(cell_value):
@@ -768,17 +822,7 @@ def parse_dict_string(cell_value, key_type=string_or_float, value_type=float):
         raise TypeError(f"Trying to parse a dict string '{cell_value}', "
                         f"wrong type {type(cell_value)} found instead. "
                         f"Double check the has_dict_values column property.") from ex
-    cell_value = cell_value[1:-1].strip()
-    column_dict = dict()
-    for pair in (cell_value.split(",") if cell_value else []):
-        a, b = [s.strip() for s in pair.split(":")]
-        if key_type is not None:
-            a = key_type(a)
-        if value_type is not None:
-            b = value_type(b)
-        assert a not in column_dict, f"A non-unique-key ({a}) dictionary string was found {cell_value}"
-        column_dict[a] = b
-    return column_dict
+    return ast.literal_eval(cell_value)
 
 
 def check_unique_indices(df: pd.DataFrame):
